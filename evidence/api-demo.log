@@ -1,0 +1,114 @@
+
+1. POST /auth/login  (valid credentials)
+HTTP/1.1 200 OK
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 332
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIyIiwidXNlcm5hbWUiOiJkZW1vIiwicm9sZSI6InVzZXIiLCJpc3MiOiJoZHUtaXMtbGFiMS1zZWN1cmUtYXBpIiwiaWF0IjoxNzkzMTEwNDI2LCJleHAiOjE3OTMxMTEzMjZ9.2fBO8kEYZo6PmChPzWH0VRFLEphalUJLa8TN19_346Y","expires_in":900,"token_type":"Bearer","user":{"id":2,"role":"user","username":"demo"}}
+
+2. GET /api/data  (no token -> must be rejected)
+HTTP/1.1 401 UNAUTHORIZED
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 59
+WWW-Authenticate: Bearer realm="secure-api"
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"error":"unauthorized","message":"Missing bearer token."}
+
+3. GET /api/data  (tampered token -> must be rejected)
+HTTP/1.1 401 UNAUTHORIZED
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 55
+WWW-Authenticate: Bearer realm="secure-api"
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"error":"unauthorized","message":"Token is invalid."}
+
+4. GET /api/data  (valid token -> 200 OK)
+HTTP/1.1 200 OK
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 527
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"posts":[{"author":"admin","body":"This row is served from SQLite.","created_at":"2026-01-01T00:00:00+00:00","id":1,"title":"Welcome to the secure API"},{"author":"demo","body":"Demonstrates the protected data endpoint.","created_at":"2026-01-01T00:00:00+00:00","id":2,"title":"Second post"}],"requested_by":{"id":2,"role":"user","username":"demo"},"users":[{"created_at":"2026-01-01T00:00:00+00:00","id":1,"role":"admin","username":"admin"},{"created_at":"2026-01-01T00:00:00+00:00","id":2,"role":"user","username":"demo"}]}
+
+5. POST /auth/login  (SQL injection payload -> rejected by validator)
+HTTP/1.1 400 BAD REQUEST
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 101
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"error":"validation_error","message":"Field 'username' must be 3-32 characters of [A-Za-z0-9_.-]."}
+
+6. POST /api/posts  (XSS payload -> stored HTML-escaped)
+HTTP/1.1 201 CREATED
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 211
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"author":"demo","message":"Post created.","post":{"body":"hello &lt;img src=x onerror=alert(1)&gt;","created_at":"2026-10-27T14:13:46+00:00","id":3,"title":"&lt;script&gt;alert(&#34;xss&#34;)&lt;/script&gt;"}}
+
+7. POST /api/posts  (malformed body -> 400)
+HTTP/1.1 400 BAD REQUEST
+Server: Werkzeug/3.1.9 Python/3.9.6
+Date: Tue, 27 Oct 2026 14:13:46 GMT
+Content-Type: application/json
+Content-Length: 93
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Cache-Control: no-store
+X-Permitted-Cross-Domain-Policies: none
+Connection: close
+
+{"error":"validation_error","message":"Field 'title' must be between 1 and 120 characters."}

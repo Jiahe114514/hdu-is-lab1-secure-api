@@ -1,0 +1,28 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.3.4, pluggy-1.6.0 -- /Users/jiahe/Documents/deepseek-harness/default-workspace/lab1/secure-api/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/jiahe/Documents/deepseek-harness/default-workspace/lab1/secure-api
+plugins: cov-6.0.0
+collecting ... collected 19 items
+
+tests/test_api.py::test_health PASSED                                    [  5%]
+tests/test_api.py::test_login_success_returns_jwt PASSED                 [ 10%]
+tests/test_api.py::test_login_failures_are_generic[payload0] PASSED      [ 15%]
+tests/test_api.py::test_login_failures_are_generic[payload1] PASSED      [ 21%]
+tests/test_api.py::test_login_validation_rejects_oversized_input PASSED  [ 26%]
+tests/test_api.py::test_login_brute_force_is_rate_limited PASSED         [ 31%]
+tests/test_api.py::test_data_requires_token PASSED                       [ 36%]
+tests/test_api.py::test_data_rejects_tampered_token PASSED               [ 42%]
+tests/test_api.py::test_data_rejects_expired_token PASSED                [ 47%]
+tests/test_api.py::test_data_returns_records_without_secrets PASSED      [ 52%]
+tests/test_api.py::test_sql_injection_payload_does_not_authenticate PASSED [ 57%]
+tests/test_api.py::test_sql_metacharacters_are_stored_literally PASSED   [ 63%]
+tests/test_api.py::test_xss_payload_is_escaped_in_responses PASSED       [ 68%]
+tests/test_api.py::test_security_headers_present PASSED                  [ 73%]
+tests/test_api.py::test_create_post_validates_input[payload0] PASSED     [ 78%]
+tests/test_api.py::test_create_post_validates_input[payload1] PASSED     [ 84%]
+tests/test_api.py::test_create_post_validates_input[payload2] PASSED     [ 89%]
+tests/test_api.py::test_create_post_validates_input[payload3] PASSED     [ 94%]
+tests/test_api.py::test_unknown_route_returns_json_404 PASSED            [100%]
+
+============================== 19 passed in 0.16s ==============================

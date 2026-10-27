@@ -39,7 +39,7 @@ jobs:
           mkdir -p reports
 
       - name: Unit and security regression tests
-        run: pytest -q --cov=app --cov-report=term-missing --cov-report=xml:reports/coverage.xml
+        run: python -m pytest -q --cov=app --cov-report=term-missing --cov-report=xml:reports/coverage.xml
 
       - name: "SAST · bandit (static application security testing)"
         run: |
