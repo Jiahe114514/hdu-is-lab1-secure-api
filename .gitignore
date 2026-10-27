@@ -1,0 +1,23 @@
+# --- Python -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Runtime data -----------------------------------------------------
+instance/
+*.db
+*.sqlite3
+.env
+
+# --- Generated reports ------------------------------------------------
+reports/
+
+# --- Editors / OS -----------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
