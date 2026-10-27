@@ -1,4 +1,4 @@
-# Secure REST API · CI/CD Security Pipeline · CVE-2021-43798 Analysis
+# Secure REST API · CI/CD Security Pipeline · CVE-2021-21234 Analysis
 
 **HDU IS — Laboratory work No. 1**
 *Secure REST API Development with CI/CD and Real CVE Vulnerability Analysis*
@@ -31,7 +31,7 @@ design (OWASP Top 10) → implement → test → SAST/SCA in CI → reproduce CV
 | CI/CD | GitHub Actions | Public pipeline runs, artefacts, job summary |
 | SAST | **bandit** | Detects hard-coded secrets, unsafe calls, weak crypto |
 | SCA | **pip-audit** | Matches dependencies against the PyPI advisory database |
-| Vulnerable target | **Grafana 8.2.6** (Vulhub) | CVE-2021-43798, unauthenticated arbitrary file read |
+| Vulnerable target | **Spring Boot 1.5.22 + spring-boot-actuator-logview 0.2.12** | CVE-2021-21234, path traversal in the logview actuator endpoint |
 
 ---
 
@@ -53,10 +53,13 @@ design (OWASP Top 10) → implement → test → SAST/SCA in CI → reproduce CV
 │   ├── demo_api.sh          # end-to-end curl demonstration
 │   └── ci_summary.py        # renders the pipeline summary
 ├── .github/workflows/ci.yml # SAST + SCA + tests on every push and pull request
-├── cve/grafana-CVE-2021-43798/
-│   ├── docker-compose.yml          # vulnerable: grafana/grafana:8.2.6
-│   ├── docker-compose.fixed.yml    # patched:    grafana/grafana:8.3.1
-│   ├── reproduce.sh                # exploit + database exfiltration
+├── cve/spring-CVE-2021-21234/
+│   ├── pom.xml                     # Maven project, logview.version = 0.2.12 (vulnerable)
+│   ├── Dockerfile                  # Java 8 runtime image
+│   ├── docker-compose.yml          # vulnerable: logview 0.2.12
+│   ├── docker-compose.fixed.yml    # patched:    logview 0.2.13
+│   ├── src/                        # minimal Spring Boot 1.5 application
+│   ├── reproduce.sh                # exploit: read /etc/passwd, /etc/shadow, environ
 │   └── verify_fix.sh               # attack replay + regression check
 ├── evidence/                # raw terminal transcripts of every demonstration
 ├── docs/screenshots/        # rendered screenshots used in the report
@@ -240,131 +243,174 @@ were upgraded (Flask 3.0.3 → 3.1.3, PyJWT 2.10.1 → 2.15.1) and one dependenc
 
 ---
 
-## 8. CVE analysis — CVE-2021-43798 (Grafana path traversal)
+## 8. CVE analysis — CVE-2021-21234 (spring-boot-actuator-logview path traversal)
 
 | Field | Value |
 |---|---|
-| CVE | **CVE-2021-43798** |
-| Product | Grafana 8.0.0-beta1 … 8.3.0 (fixed in 8.0.7 / 8.1.8 / 8.2.7 / 8.3.1) |
-| Class | CWE-22 Path Traversal → arbitrary file read (unauthenticated) |
-| Impact | Confidentiality: read any file the Grafana process can read — config, secrets, the SQLite database with password hashes |
-| CVSS v3.1 | 7.5 High (`AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`) |
-| Environment | Vulhub `grafana/CVE-2021-43798`, image `grafana/grafana:8.2.6` |
+| CVE | **CVE-2021-21234** |
+| Product | `eu.hinsch:spring-boot-actuator-logview` < 0.2.13 (fixed in 0.2.13) |
+| Class | CWE-22 Path Traversal → arbitrary file read (unauthenticated in this deployment) |
+| Impact | Confidentiality: any file readable by the application process — `/etc/passwd`, `/etc/shadow`, process environment, application configuration with credentials |
+| CVSS v3.1 | 7.7 High (`AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N`) |
+| Environment | Custom Spring Boot 1.5.22 demo application; library 0.2.12 (vulnerable) vs 0.2.13 (patched); Java 8; Docker Compose; host port 8081 |
+
+Vulhub has no ready-made scenario for this CVE, so the environment was built from the
+vulnerable library itself: a minimal Spring Boot 1.5 application that exposes the
+`/log` actuator endpoint with `logging.path=/var/log/app`, packaged with
+`spring-boot-actuator-logview:0.2.12`.
 
 ### 8.1 Vulnerable environment
 
 ```bash
-docker compose up -d                      # cve/grafana-CVE-2021-43798/docker-compose.yml
-docker compose ps                         # grafana/grafana:8.2.6, 0.0.0.0:3000->3000/tcp
+cd cve/spring-CVE-2021-21234
+mvn -B package -DskipTests                 # builds the fat jar with logview 0.2.12
+docker compose build && docker compose up -d
+docker compose ps                          # lab1-logview-vuln, 8081->8080
 ```
 
 ### 8.2 Reproduction
 
-The plugin asset route `/public/plugins/:pluginId/*` is public by design (assets must
-load before login). Supplying `../` sequences in the wildcard segment escapes the plugin
-directory. `curl --path-as-is` is required, otherwise the client normalises the path
-before sending it.
+The endpoint exposes two request parameters: `filename` (which file to show) and `base`
+(which sub-directory of the log root to browse). Supplying a traversal sequence in
+`base` escapes the log directory. `curl --path-as-is` keeps the sequence intact on the
+client side.
 
 ```bash
-curl -s --path-as-is -i \
-  "http://127.0.0.1:3000/public/plugins/alertlist/../../../../../../../../../../../../../etc/passwd"
+curl -s -i --path-as-is \
+  "http://127.0.0.1:8081/log/view?filename=passwd&base=../../../../etc"
 ```
 
-**Result — `HTTP/1.1 200 OK`, the file content is returned:**
+**Result — `HTTP/1.1 200`, the file content is returned:**
 
 ```
-root:x:0:0:root:/root:/bin/ash
-bin:x:1:1:bin:/bin:/sbin/nologin
-daemon:x:2:2:daemon:/sbin:/sbin/nologin
+HTTP/1.1 200
+Content-Type: text/plain
+Content-Length: 888
+
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
 ...
 ```
 
-Beyond `/etc/passwd`, the same primitive downloads Grafana's SQLite database:
-
-```bash
-curl -s --path-as-is -o grafana.db \
-  "http://127.0.0.1:3000/public/plugins/alertlist/../../../../../../../../../../../../../var/lib/grafana/grafana.db"
-sqlite3 grafana.db "SELECT login, password, salt FROM user;"
-admin|8fbb4c7c8f2f906bebebf128bbf1324bf7fd312d...|zBxwBrIuAK
-```
+`filename` itself is clean (`passwd`), which is exactly why the library's own `..` check
+does not fire. The same request shape reads `/etc/shadow` and the process environment
+(`filename=environ&base=../../../../proc/self`), and `GET /log/` still lists the log
+directory normally — the endpoint works as designed, just not within its intended
+boundary.
 
 ![CVE reproduction](docs/screenshots/05-cve-repro.png)
 
 ### 8.3 Root cause
 
-The vulnerable handler (`pkg/api/plugins.go`, v8.2.6):
+The vulnerable version (`lib/.../LogViewEndpoint.java`, 0.2.12) validates only one of the
+two path parameters:
 
-```go
-requestedFile := filepath.Clean(macaron.Params(c.Req)["*"])
-pluginFilePath := filepath.Join(plugin.PluginDir, requestedFile)
-f, err := os.Open(pluginFilePath)          // <- no containment check
+```java
+@RequestMapping("/view")
+public void view(@RequestParam String filename,
+                 @RequestParam(required = false) String base, ...) {
+    securityCheck(filename);                  // checks `filename` only
+    Path path = loggingPath(base);            // `base` never validated
+    ...
+    fileProvider.streamContent(path, filename, response.getOutputStream());
+}
+
+private Path loggingPath(String base) {
+    return base != null ? Paths.get(loggingPath, base) : Paths.get(loggingPath);
+}
+
+private void securityCheck(String filename) {
+    Assert.doesNotContain(filename, "..");    // string-level check
+}
 ```
 
-`filepath.Clean` *normalises* the path but does not *confine* it: `../../..` survives
-cleaning, and `filepath.Join` happily produces a path outside `plugin.PluginDir`. The
-code therefore validated the **shape** of the input while never verifying the
-**result**. It is an input-handling error (missing canonical-path confinement), not a
-logic or configuration error — the route itself is unauthenticated by design and that is
-fine; the missing step is the "does the resolved path still live inside the plugin
-directory?" check.
+`Paths.get("/var/log/app", "../../../../etc")` resolves to `/etc`, and `filename=passwd`
+is then appended to it, so the file is opened outside the root. The check is applied to
+**the wrong parameter** and at **the wrong level**: it inspects one string for `..`
+instead of inspecting the resolved path for containment.
+
+This is an input-handling error, not a configuration error and not a missing
+authentication check — the endpoint is supposed to serve logs, and in this lab it is
+exposed without authentication to model an actuator endpoint reachable by a low-privileged
+user (NVD scores the vulnerability `PR:L` for exactly that reason). The defect is the
+absence of a "does the resolved file still live inside the log root?" test.
 
 ### 8.4 Fix
 
-Two independent layers:
+Applied fix — upgrade the library and rebuild, keeping the application source untouched:
 
-1. **Configuration level (applied):** upgrade the image to a patched release.
-
-```yaml
-# cve/grafana-CVE-2021-43798/docker-compose.fixed.yml
-services:
-  grafana:
-    image: grafana/grafana:8.3.1      # was 8.2.6
+```xml
+<!-- pom.xml -->
+<properties>
+  <logview.version>0.2.13</logview.version>   <!-- was 0.2.12 -->
+</properties>
 ```
 
-2. **Code level (what the vendor changed in 8.3.1):** anchor the requested path to `/`,
-   compute the relative path and join it to the absolute plugin directory, so escaping is
-   impossible.
-
-```go
-requestedFile := filepath.Clean(filepath.Join("/", web.Params(c.Req)["*"]))  // "../../etc/passwd" -> "/etc/passwd"
-rel, err := filepath.Rel("/", requestedFile)                                  // -> "etc/passwd"
-absPluginDir, err := filepath.Abs(plugin.PluginDir)
-pluginFilePath := filepath.Join(absPluginDir, rel)                            // always inside the plugin dir
+```bash
+mvn -B package -DskipTests -Dlogview.version=0.2.13
+docker compose -f docker-compose.fixed.yml build
+docker compose -f docker-compose.fixed.yml up -d
 ```
 
-Why it is effective: prefixing `/` makes `Clean` collapse every leading `..`, and
-`Rel("/", …)` can no longer return a path containing `..`. The resolved path is
-guaranteed to be `<pluginDir>/…`, so a traversal request simply points at a non-existent
-file inside the plugin directory and returns `404`.
+What the vendor changed in 0.2.13 is precisely the missing check — it now validates the
+resolved canonical path against the canonical log root:
 
-If an upgrade were impossible, the equivalent mitigation is a reverse-proxy rule that
-rejects any request URI containing `..`, `%2e%2e` or encoded slashes on
-`/public/plugins/`.
+```java
+private void securityCheck(Path base, String filename) {
+    String canonicalLoggingPath = new File(base.toFile(), filename).getCanonicalPath();
+    String baseCanonicalPath = new File(loggingPath).getCanonicalPath();
+    Assert.isTrue(canonicalLoggingPath.startsWith(baseCanonicalPath),
+        "File ... may not be located outside base path " + loggingPath);
+}
+```
+
+Why it is effective: `getCanonicalPath()` resolves every `.` and `..` and returns an
+absolute path, so the comparison happens on the **final target**, not on the raw
+parameters. Any resolution that lands outside `/var/log/app` fails the `startsWith`
+test, no matter which parameter carried the traversal. Because the check is on the
+resolved path, it also covers encodings and multi-segment tricks that a string search
+for `..` would miss.
+
+If upgrading were impossible, the compensating controls are: restrict the filesystem
+permissions of the account running the application, and block `..`/`%2e%2e` sequences on
+the actuator path at the reverse proxy.
 
 ### 8.5 Verification of the fix
 
 ```bash
 docker compose down
 docker compose -f docker-compose.fixed.yml up -d
-./verify_fix.sh http://127.0.0.1:3000
+./verify_fix.sh http://127.0.0.1:8081
 ```
 
 ```
 === attack replay against the patched container ===
-  /etc/passwd                      -> HTTP 404
-  /etc/grafana/grafana.ini         -> HTTP 404
-  /var/lib/grafana/grafana.db      -> HTTP 404
+  /etc/passwd                -> HTTP 500   leaked_root_lines=0
+  /etc/shadow                -> HTTP 500   leaked_root_lines=0
+  /proc/self/environ         -> HTTP 500   leaked_root_lines=0
 
 === regression: legitimate functionality still works ===
-  GET /login                       -> HTTP 200
-  GET /api/health                  -> HTTP 200
-  GET /public/plugins/alertlist/plugin.json -> HTTP 200
+  GET /log/ (listing)        -> HTTP 200
+  GET /log/view?spring.log   -> HTTP 200
+  GET /log/search?term=INFO  -> HTTP 200
+```
+
+The patched container answers with the library's own rejection message instead of file
+content:
+
+```json
+{"status":500,"error":"Internal Server Error",
+ "message":"File /var/log/app/../../../../etc/passwd may not be located outside base path /var/log/app"}
 ```
 
 ![Fix verification](docs/screenshots/06-cve-fixed.png)
 
-The exploit is dead and the application still serves its login page, health endpoint and
-plugin assets — no collateral damage from the patch.
+The exploit is dead — no file content is returned for any of the three targets — while the
+log listing, the single-file view and the search function still return `200`. The
+remaining observation is that 0.2.13 rejects with `500` (an `IllegalArgumentException`
+surfacing through the default error handler) rather than `400`; content-wise this is
+safe, but a reverse proxy mapping that case to `400` would be cleaner.
 
 ---
 
@@ -401,6 +447,9 @@ image can be checked against the corresponding `.log` file.
    path that your own code review never touches (Log4Shell being the canonical example).
 5. **Docker + Vulhub.** Reproducible, disposable, isolated: one command builds the exact
    vulnerable version, `down` erases it, and nothing vulnerable ever runs on the host.
+   Vulhub had no scenario for CVE-2021-21234, so here the vulnerable image is built from
+   the affected library pinned in a `pom.xml` and `Dockerfile` — the same principle, the
+   bad version lives in a container definition instead of on the machine.
 6. **Vulnerability vs exploit.** A vulnerability is the flaw; an exploit is the concrete
    input/sequence that abuses it. This work reproduced the exploit and then removed the
    flaw.
